@@ -67,7 +67,7 @@ unsigned long blinkCurrentMillis;
 bool blinkState = 0;
 const unsigned long timeadjPeriod = 86400000;
 const unsigned long temperaturePeriod = 10000;
-const unsigned long blinkPeriod = 500;
+const unsigned long blinkPeriod = 1000;
 
 //SD card setup
 #define SCK  18
@@ -98,7 +98,7 @@ void setup() {
   //WiFi configuration
   Wire.begin();
   WiFi.begin(ssid, password);
-  Serial.println("Connecting");
+  Serial.println("Connecting to the Wi-Fi");
   digitalWrite(OnBoardLED, HIGH);
   while(wifiTries != 120) {
     if (WiFi.status() != WL_CONNECTED){
@@ -111,17 +111,21 @@ void setup() {
         Serial.println(WiFi.localIP());
     }
   }
+
+  if (WiFi.status() != WL_CONNECTED){
+    Serial.println("Wi-Fi not connected succesfully");
+  }
   
   //SD card configuration
   SPIClass spi = SPIClass(HSPI);
   spi.begin(SCK, MISO, MOSI, CS);
   
-  Serial.println("Initializing SD card...");
+  Serial.println("Initializing SD card");
     if (!SD.begin(CS)) {
-      Serial.println("initialization failed!");
+      Serial.println("SD card initialization failed!");
     while (1);
   }
-  Serial.println("initialization done.");
+  Serial.println("SD card initialization done");
   createTemperatureFile();
   createRainfallFile();
 
@@ -135,6 +139,7 @@ void setup() {
 void loop() { 
   currentMillis = millis();
   blinkCurrentMillis = millis();
+  
   if (currentMillis - startMillis >= timeadjPeriod) {
     adjustRTC();
     startMillis = currentMillis;
@@ -167,7 +172,7 @@ void loop() {
 void printLocalTime(){
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)){
-    Serial.println("Failed to obtain time");
+    Serial.println("Failed to obtain time with the online server");
     return;
   }
   Serial.println(&timeinfo, "%Y-%m-%d %H:%M:%S");
@@ -176,7 +181,7 @@ void printLocalTime(){
 byte getSeconds() {
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)){
-    Serial.println("Failed to obtain time");
+    Serial.println("Error obtaining the date and time with the online server. Possibly the Wi-Fi is not connected. The RTC time will be used instead");
     time_error = true;
     return time_error;
   }
@@ -187,7 +192,7 @@ byte getSeconds() {
 byte getMinutes() {
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)){
-    Serial.println("Failed to obtain time");
+    Serial.println("Error obtaining the date and time with the online server. Possibly the Wi-Fi is not connected. The RTC time will be used instead");
     time_error = true;
     return time_error;
   }
@@ -198,7 +203,7 @@ byte getMinutes() {
 byte getHours() {
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)){
-    Serial.println("Failed to obtain time");
+    Serial.println("Error obtaining the date and time with the online server. Possibly the Wi-Fi is not connected. The RTC time will be used instead");
     time_error = true;
     return time_error;
   }
@@ -209,7 +214,7 @@ byte getHours() {
 byte getDays() {
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)){
-    Serial.println("Failed to obtain time");
+    Serial.println("Error obtaining the date and time with the online server. Possibly the Wi-Fi is not connected. The RTC time will be used instead");
     time_error = true;
     return time_error;
   }
@@ -220,7 +225,7 @@ byte getDays() {
 byte getMonths() {
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)){
-    Serial.println("Failed to obtain time");
+    Serial.println("Error obtaining the date and time with the online server. Possibly the Wi-Fi is not connected. The RTC time will be used instead");
     time_error = true;
     return time_error;
   }
@@ -231,7 +236,7 @@ byte getMonths() {
 int getYears() {
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)){
-    Serial.println("Failed to obtain time");
+    Serial.println("Error obtaining the date and time with the online server. Possibly the Wi-Fi is not connected. The RTC time will be used instead");
     time_error = true;
     return time_error;
   }
@@ -249,7 +254,7 @@ void adjustRTC(){
   month = getMonths();
   year = getYears();
   if (time_error == true){
-    Serial.println("Error adjusting the RTC");
+    Serial.println("Error adjusting the RTC with the online server. Possibly the Wi-Fi is not connected");
     time_error = false;
     return;
   } 
@@ -348,5 +353,4 @@ void saveRainfallValue(){
   } else {
       Serial.println("Error opening rainfall.txt file");
   }
-
 }
