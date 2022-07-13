@@ -19,6 +19,7 @@
 
 //Temperature setup
 #define TempSensorPin 17
+#define OnBoardLED 2
 OneWire oneWire(TempSensorPin);
 DallasTemperature sensors(&oneWire);
 float Celcius=0;
@@ -60,11 +61,13 @@ int rain = 0;
 //Time setup
 unsigned long startMillis;
 unsigned long currentMillis;
-unsigned long printMillis;
 unsigned long temperatureMillis;
-//const unsigned long printPeriod = 1000;
+unsigned long blinkMillis;
+unsigned long blinkCurrentMillis;
+bool blinkState = 0;
 const unsigned long timeadjPeriod = 86400000;
-const unsigned long temperaturePeriod = 60000;
+const unsigned long temperaturePeriod = 10000;
+const unsigned long blinkPeriod = 500;
 
 //SD card setup
 #define SCK  18
@@ -80,35 +83,23 @@ String header;
 String data_str;
 
 void setup() {
-  sensors.begin();
+  Serial.begin(115200);
 
-  //SD card configuration
-  SPIClass spi = SPIClass(HSPI);
-  spi.begin(SCK, MISO, MOSI, CS);
-  
-  Serial.print("Initializing SD card...");
-    if (!SD.begin(CS)) {
-      Serial.println("initialization failed!");
-    while (1);
-  }
-  Serial.println("initialization done.");
-
-  createTemperatureFile();
-  createRainfallFile();
-  
+  sensors.begin();  
   //Pluviometer configuration
   pinMode(hallSensorPin, INPUT);
+  pinMode(OnBoardLED, OUTPUT);
 
   //Temperature configuration
   startMillis = millis();
-  printMillis = millis();
   temperatureMillis = millis();
+  blinkMillis = millis();
 
   //WiFi configuration
   Wire.begin();
-  Serial.begin(115200);
   WiFi.begin(ssid, password);
   Serial.println("Connecting");
+  digitalWrite(OnBoardLED, HIGH);
   while(wifiTries != 120) {
     if (WiFi.status() != WL_CONNECTED){
           delay(500);
@@ -120,15 +111,30 @@ void setup() {
         Serial.println(WiFi.localIP());
     }
   }
+  
+  //SD card configuration
+  SPIClass spi = SPIClass(HSPI);
+  spi.begin(SCK, MISO, MOSI, CS);
+  
+  Serial.println("Initializing SD card...");
+    if (!SD.begin(CS)) {
+      Serial.println("initialization failed!");
+    while (1);
+  }
+  Serial.println("initialization done.");
+  createTemperatureFile();
+  createRainfallFile();
 
   //RTC configuration
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   printLocalTime();
-  adjustRTC();  
+  adjustRTC();
+  digitalWrite(OnBoardLED, LOW);
 }
 
 void loop() { 
   currentMillis = millis();
+  blinkCurrentMillis = millis();
   if (currentMillis - startMillis >= timeadjPeriod) {
     adjustRTC();
     startMillis = currentMillis;
@@ -147,6 +153,13 @@ void loop() {
     saveTemperatureValue();
   }
 
+  if (blinkState){
+    digitalWrite(OnBoardLED, HIGH);
+    if (blinkCurrentMillis - blinkMillis >= blinkPeriod){
+      digitalWrite(OnBoardLED, LOW);  
+      blinkState = 0;
+    }
+  }
   precipitation();
   
 }
@@ -282,29 +295,30 @@ void precipitation(){
 }
 
 void createTemperatureFile(){
-  myFile = SD.open("/temperature.txt", FILE_WRITE);
-
-  // if the file opened okay, write to it:
-  if (myFile) {
+  myFile = SD.open("/temperature.txt");
+  if (!myFile){
+    myFile = SD.open("/temperature.txt", FILE_WRITE);
+    Serial.println("Temperature file doesn't exist. Creating file");
     header = String("Date") + "," + String("Temperature"), + "\r\n";
     myFile.println(header.c_str());
     myFile.close();
     Serial.println("Temperature File Created");
   } else {
-    Serial.println("Error opening the temperature.txt file");
+    Serial.println("Temperature file already exists");
   }
 }
 
 void createRainfallFile(){
-  myFile = SD.open("/rainfall.txt", FILE_WRITE);
-  // if the file opened okay, write to it:
-  if (myFile) {
+  myFile = SD.open("/rainfall.txt");
+  if (!myFile) {
+    myFile = SD.open("/rainfall.txt", FILE_WRITE);
+    Serial.println("Rainfall file doesn't exist. Creating file");
     header = String("Date") + "," + String("Rainfall"), + "\r\n";
     myFile.println(header.c_str());
     myFile.close();
     Serial.println("Rainfall File Created");
   } else {
-    Serial.println("Error opening the rainfall.txt file");
+      Serial.println("Rainfall file already exists");
   }
 }
 
@@ -315,6 +329,8 @@ void saveTemperatureValue(){
     myFile.println(data_str.c_str());
     myFile.close();
     Serial.println("Appendend to the temperature.txt file");
+    blinkState = 1;
+    blinkMillis = blinkCurrentMillis;
   } else {
       Serial.println("Error opening temperature.txt file");
   }
@@ -327,7 +343,10 @@ void saveRainfallValue(){
     myFile.println(data_str.c_str());
     myFile.close();
     Serial.println("Appendend to the rainfall.txt file");
+    blinkState = 1;
+    blinkMillis = blinkCurrentMillis;
   } else {
       Serial.println("Error opening rainfall.txt file");
   }
+
 }
