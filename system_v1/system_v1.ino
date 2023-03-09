@@ -18,7 +18,7 @@
 
 
 //Temperature setup
-#define TempSensorPin 17
+#define TempSensorPin 4
 #define OnBoardLED 2
 OneWire oneWire(TempSensorPin);
 DallasTemperature sensors(&oneWire);
@@ -31,7 +31,7 @@ DS3231 RTC;
 RTClib myRTC;
 
 const char* ntpServer = "pool.ntp.org";
-const long gmtOffset_sec = -18000;
+const long gmtOffset_sec = -21600;
 const int daylightOffset_sec = 0;
 const char* ssid = "ONEPLUS_co_apyjsi";
 const char* password = "yjsi5896";
@@ -53,7 +53,7 @@ int wifiTries = 0;
 boolean time_error = false;
 
 //Pluviometer setup
-uint8_t hallSensorPin   = 25;
+uint8_t hallSensorPin   = 16;
 bool state = HIGH;
 bool stateNow = HIGH;
 int rain = 0;
@@ -64,10 +64,14 @@ unsigned long currentMillis;
 unsigned long temperatureMillis;
 unsigned long blinkMillis;
 unsigned long blinkCurrentMillis;
+unsigned long rainMillis;
+
 bool blinkState = 0;
 const unsigned long timeadjPeriod = 86400000;
-const unsigned long temperaturePeriod = 10000;
+const unsigned long temperaturePeriod = 300000;
 const unsigned long blinkPeriod = 1000;
+const unsigned long rainPeriod = 500;
+
 
 //SD card setup
 #define SCK  18
@@ -84,10 +88,9 @@ String data_str;
 
 void setup() {
   Serial.begin(115200);
-
   sensors.begin();  
   //Pluviometer configuration
-  pinMode(hallSensorPin, INPUT);
+  pinMode(hallSensorPin, INPUT_PULLUP   );
   pinMode(OnBoardLED, OUTPUT);
 
   //Temperature configuration
@@ -109,6 +112,7 @@ void setup() {
         Serial.println("");
         Serial.print("Connected to WiFi network with IP Address: ");
         Serial.println(WiFi.localIP());
+        break;
     }
   }
 
@@ -283,20 +287,24 @@ void RTCTimeNow() {
 }
 
 void precipitation(){
-  stateNow = digitalRead(hallSensorPin);
-  if (state != stateNow){
-    state = digitalRead(hallSensorPin);
-    if (state == HIGH){
-      rain++;
-      RTCTimeNow();
-      Serial.print(DateAndTimeString);
-      Serial.print("  ");
-      Serial.print(rain);
-      Serial.println();
-      saveRainfallValue();
-    }   
+  if (currentMillis - rainMillis >= rainPeriod){
+    stateNow = digitalRead(hallSensorPin);
+    while (stateNow != state){
+      state = digitalRead(hallSensorPin);
+      
+      if (state == HIGH){
+        rain = rain + 1;
+        state = stateNow;
+        rainMillis = currentMillis;
+        RTCTimeNow();
+        Serial.print(DateAndTimeString);
+        Serial.print("  ");
+        Serial.print(rain);
+        Serial.println();
+        saveRainfallValue();
+      }
+    }
   }
-  
 }
 
 void createTemperatureFile(){
