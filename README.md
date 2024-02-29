@@ -1,2 +1,2 @@
 # PP_arduino
-Repository to dump the arduino code.
+Repository to control the versions of the compiled system in the ESP32 box
