@@ -4,12 +4,28 @@
 * Crated by Jose Artur Teixeira Brasil,
 * jose.brasil@utsa.edu
 *
-* 
+*       
 *
 */
 
-// Change the box here
+// Change the box and initial settings here
 const char* box = "box_dc";
+
+// Wifi credentials
+const char* ssid = "PP_IOT";
+const char* password = "UTSA*permeable_pavement";
+// const char* ssid = "Arepinhas";
+// const char* password = "arepasandcoxinhas";
+
+
+// Temperature period: Uncomment the one desired
+// const unsigned long temperaturePeriod = 10000;
+const unsigned long temperaturePeriod = 300000;
+
+//MQTT hostname
+const char* mqtt_server = "192.168.10.138"; //MQTT field raspberry pi
+// const char* mqtt_server = "192.168.1.219"; //MQTT test raspberry pi
+
 
 //Libraries
 #include <DS3231.h>
@@ -19,7 +35,16 @@ const char* box = "box_dc";
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <PubSubClient.h>
+#include <ModbusRTU.h>
+#include <HardwareSerial.h>
 
+// Flowmeter level
+#define RX_PIN GPIO_NUM_26 // RxD to IO26
+#define TX_PIN GPIO_NUM_25  // TxD to IO25
+#define SLAVE_ID 2
+#define FIRST_REG 519  //Needs to be replaced by the Level register. Remember to subtract 1 from the register number.
+#define REG_COUNT 2
+#define MODBUS_DERE_PIN 0
 
 //Temperature 1 setup
 #define TempSensorPin 17
@@ -40,6 +65,14 @@ float Fahrenheit2=0;
 float f1;
 float f2;
 
+//Pluviometer setup
+bool rainfall_data = false;
+const int hallSensorPin = 16;
+unsigned long rain = -1; // Counter for magnet passes
+bool lastSensorState = HIGH; // Used to store the previous sensor state
+int sumSensorValues = 0; // Variable to hold the sum of sensor values
+int numReadings = 0; // Variable to count the number of readings
+
 //Date and time RTC setup
 DS3231 RTC;
 RTClib myRTC;
@@ -47,8 +80,6 @@ RTClib myRTC;
 const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = -18000;
 const int daylightOffset_sec = 0;
-const char* ssid = "PP_IOT";
-const char* password = "UTSA*permeable_pavement";
 char DateAndTimeString[20];
 char DateAndTimeNow[20];
 byte seconds;
@@ -77,9 +108,16 @@ unsigned long debounceTime = 100; // Time interval to sum up values (in millisec
 
 bool blinkState = 0;
 const unsigned long timeadjPeriod = 86400000;
-const unsigned long temperaturePeriod = 10000;
-// const unsigned long temperaturePeriod = 300000;
 const unsigned long blinkPeriod = 1000;
+
+// WiFi and MQTT reconnection variables:
+const unsigned long INITIAL_RECONNECT_DELAY = 1000;  // 1 second
+const unsigned long MAX_RECONNECT_DELAY = 300000;    // 5 minutes
+const float MULTIPLIER = 1.5;
+unsigned long lastReconnectAttempt = 0;
+unsigned long reconnectDelay = INITIAL_RECONNECT_DELAY;
+unsigned long lastWiFiReconnectAttempt = 0;
+unsigned long wifiReconnectDelay = INITIAL_RECONNECT_DELAY;
 
 //SD card setup
 #define SCK  18
@@ -112,7 +150,6 @@ bool wifiConnected = false;
 // MQTT settings:
 WiFiClient espClient;
 PubSubClient client(espClient);
-const char* mqtt_server = "192.168.10.138";
 bool mqttConnected = false;
 int mqttTries = 0;
 const int mqttMaxTries = 60;
@@ -122,27 +159,32 @@ unsigned long lastMqttTry = 0;
 void setup() {
   Serial.begin(115200);
   if (box == "box_a"){
-    f1 = 1;
-    f2 = 1;
+    f1 = 0.9857;
+    f2 = 0.9837;
   } 
   else if (box == "box_b"){
-    f1 = 1;
-    f2 = 1;
+    f1 = 0.9971;
+    f2 = 1.0107;
   }
   else if (box == "box_c"){
-    f1 = 1;
-    f2 = 1;
+    f1 = 0.9924;
+    f2 = 0.9900;
   }
   else if (box == "box_da"){
-    f1 = 1;
-    f2 = 1;
+    f1 = 0.9928;
+    f2 = 1.0038;
   }
   else if (box == "box_dc"){
     f1 = 0.9917;
-    f2 = 0.9991
+    f2 = 0.9991;
   } else{
-    Serial.println("Define a valid box. Possible values are box_a, box_b, box_c, box_da, box_dc")
+    Serial.println("Define a valid box. Possible values are box_a, box_b, box_c, box_da, box_dc");
     while (1){}
+  }
+
+  if (box == "box_b" or box == "box_da"){
+    rainfall_data = true;
+    pinMode(hallSensorPin, INPUT_PULLUP);
   }
   
   sensors1.begin();
@@ -157,6 +199,11 @@ void setup() {
   pinMode(LED1, OUTPUT);
   pinMode(LED2, OUTPUT);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(RX_PIN, INPUT);
+  mySerial.begin(9600, SERIAL_8N2, RX_PIN, TX_PIN);
+  mb.begin(&mySerial, MODBUS_DERE_PIN);
+  mb.master();
+
   //WiFi configuration
   Wire.begin();
   WiFi.begin(ssid, password);
@@ -193,6 +240,8 @@ void setup() {
         digitalWrite(LED2, LOW);
         delay(200);
     }
+    Serial.println(WiFi.RSSI());
+
   } else {
       Serial.println("Failed to connect to WiFi after 120 tries");
   }
@@ -214,6 +263,13 @@ void setup() {
   }
   Serial.println("SD card initialization done");
 
+  if (box == "box_b" or box == "box_da"){
+    rainfall_data = true;
+    Serial.println("Rainfall data is True.");
+    pinMode(hallSensorPin, INPUT_PULLUP);
+    createRainfallFile();
+  }
+
   createTemperatureFile(1);
   createTemperatureFile(2);
   createTestFile();
@@ -224,9 +280,9 @@ void setup() {
   adjustRTC();
   digitalWrite(OnBoardLED, LOW);
 
+  //Connect to the MQTT protocol
   client.setServer(mqtt_server, 1883);
   client.connect(box);
-
 
   //MQTT setup
   while (!client.connected() && mqttTries < mqttMaxTries) {
@@ -243,9 +299,24 @@ void setup() {
       }
     }
   }
+  delay(500);
+  sensors1.requestTemperatures(); 
+  Celcius=sensors1.getTempCByIndex(0);
+  Fahrenheit1=sensors1.toFahrenheit(Celcius);
+  Fahrenheit1 = Fahrenheit1 * f1;
+
+  delay(500);
+  sensors2.requestTemperatures();
+  Celcius2=sensors2.getTempCByIndex(0);
+  Fahrenheit2=sensors2.toFahrenheit(Celcius2);
+  Fahrenheit2 = Fahrenheit2 * f2;
+  
+  delay(500);
 }
 
 void loop() { 
+  reconnectWiFi();
+  reconnectMQTT();
   currentMillis = millis();
   blinkCurrentMillis = millis();
   
@@ -306,6 +377,10 @@ void loop() {
   }
 
   lastButtonState = currentButtonState;
+
+  if (rainfall_data == true){
+    precipitation();
+  }
 
   client.loop();
 }
@@ -424,7 +499,7 @@ void RTCTimeNow() {
 }
 
 void createTemperatureFile(int sensorNumber){
-  String filename = "/" + box + "_temperature_" + String(sensorNumber) + ".txt";
+  String filename = "/" + String(box) + "_temperature_" + String(sensorNumber) + ".txt";
   myFile = SD.open(filename.c_str(), FILE_WRITE);
 
   // if the file opened okay, write to it:
@@ -438,8 +513,8 @@ void createTemperatureFile(int sensorNumber){
   }
 }
 
-void saveTemperatureValue(int sensorNumber, float temperature){
-    String filename = "/" + box + "_temperature_" + String(sensorNumber) + ".txt";
+void saveTemperatureValue(int sensorNumber, float temperature) {
+    String filename = "/" + String(box) + "_temperature_" + String(sensorNumber) + ".txt";
     myFile = SD.open(filename.c_str(), FILE_APPEND);
     if (myFile) {
         data_str = String(DateAndTimeString) + "," + String(temperature) + "\r\n";
@@ -447,14 +522,16 @@ void saveTemperatureValue(int sensorNumber, float temperature){
         myFile.close();
         Serial.println("Appended to the temperature_" + String(sensorNumber) + ".txt file");
 
-        if (sensorNumber == 1) {
-            digitalWrite(LED1, HIGH);
-            delay(100); // short blink
-            digitalWrite(LED1, LOW);
-        } else if (sensorNumber == 2) {
-            digitalWrite(LED2, HIGH);
-            delay(100); // short blink
-            digitalWrite(LED2, LOW);
+        if (temperature >= -50) {
+            if (sensorNumber == 1) {
+                digitalWrite(LED1, HIGH);
+                delay(100); // short blink
+                digitalWrite(LED1, LOW);
+            } else if (sensorNumber == 2) {
+                digitalWrite(LED2, HIGH);
+                delay(100); // short blink
+                digitalWrite(LED2, LOW);
+            }
         }
     } else {
         Serial.println("Error opening temperature_" + String(sensorNumber) + ".txt file");
@@ -494,17 +571,183 @@ void temperatureTest(int sensorNumber, float temperature){
       data_str = String(DateAndTimeString) + "," + String(temperature) + "\r\n";
       myFile.println(data_str.c_str());
       myFile.close();
-      Serial.println("Appended to the temperature_" + String(sensorNumber) + ".txt file");
-      if (sensorNumber == 1) {
-          digitalWrite(LED1, HIGH);
-          delay(100); // short blink
-          digitalWrite(LED1, LOW);
-      } else if (sensorNumber == 2) {
-          digitalWrite(LED2, HIGH);
-          delay(100); // short blink
-          digitalWrite(LED2, LOW);
+      Serial.println("Appended to the temperature_" + String(sensorNumber) + ".txt test file");
+
+      if (temperature >= -50) {
+          if (sensorNumber == 1) {
+              digitalWrite(LED1, HIGH);
+              delay(100); // short blink
+              digitalWrite(LED1, LOW);
+          } else if (sensorNumber == 2) {
+              digitalWrite(LED2, HIGH);
+              delay(100); // short blink
+              digitalWrite(LED2, LOW);
+          }
       }
   } else {
-      Serial.println("Error opening temperature_" + String(sensorNumber) + ".txt file");
+      Serial.println("Error opening temperature_" + String(sensorNumber) + ".txt test file");
   }
 }
+
+void precipitation() {
+  unsigned long currentRainfallMillis = millis(); // Get the current time
+
+  // If 50ms have passed since the last reading
+  if (currentRainfallMillis - lastRainfallMillis >= debounceTime) {
+    int averageSensorValue = 0; // Default value
+    
+    if (numReadings != 0) {
+      averageSensorValue = sumSensorValues / numReadings;
+    }
+
+    // If the average sensor value is greater than zero, consider the state as HIGH, else consider it as LOW
+    bool currentSensorState = (averageSensorValue > 0) ? HIGH : LOW;
+
+    // If sensor state changes from HIGH to LOW, consider it a magnet pass
+    if (lastSensorState == HIGH && currentSensorState == LOW) {
+      rain++;
+      RTCTimeNow();
+      saveRainfallValue();
+      sendRainfallValue();
+    }
+
+    // Update the lastSensorState and lastMillis for the next iteration
+    lastSensorState = currentSensorState;
+    lastRainfallMillis = currentRainfallMillis;
+
+    // Reset the sum and the count
+    sumSensorValues = 0;
+    numReadings = 0;
+  }
+  else {
+    // Add the current sensor value to the sum
+    sumSensorValues += digitalRead(hallSensorPin);
+
+    // Increment the number of readings
+    numReadings++;
+  }
+}
+
+void createRainfallFile(){
+  String filename = "/" + String(box) + "_rainfall.txt";
+  
+  if (!myFile) {
+    myFile = SD.open(filename.c_str(), FILE_WRITE);
+    Serial.println("Rainfall file doesn't exist. Creating file");
+    header = String("Date") + "," + String("Rainfall"), + "\r\n";
+    myFile.println(header.c_str());
+    myFile.close();
+    Serial.println("Rainfall File Created");
+  } else {
+      Serial.println("Rainfall file already exists");
+  }
+}
+
+void saveRainfallValue(){
+  String filename = "/" + String(box) + "_rainfall.txt";
+  myFile = SD.open(filename.c_str(), FILE_APPEND);
+  if (myFile) {
+    data_str = String(DateAndTimeString) + "," + String(rain), + "\r\n";
+    myFile.println(data_str.c_str());
+    myFile.close();
+    Serial.println(555);
+    blinkState = 1;
+    blinkMillis = blinkCurrentMillis;
+  } else {
+      Serial.println("Error opening rainfall.txt file");
+  }
+}
+
+void sendRainfallValue(){
+  data_str = String(DateAndTimeString) + "," + String(rain) + "\r\n";
+  topic = String(box) + "/" + "rainfall";
+
+  client.connect(box);
+  if (!client.connected()) {
+    Serial.println("MQTT wasn't able to connect.");
+  } else {
+    client.publish(topic.c_str(), data_str.c_str());
+    String message = "Rainfall data was published via MQTT";
+    Serial.println(message);
+  }
+}
+
+void reconnectMQTT() {
+    if (!client.connected()) {
+        unsigned long now = millis();
+        if (now - lastReconnectAttempt > reconnectDelay) {
+            Serial.println("Attempting MQTT server reconnection...");
+
+            if (client.connect(box)) {
+                Serial.println("Connected to MQTT server");
+                reconnectDelay = INITIAL_RECONNECT_DELAY; // Reset delay
+                // Add any subscription code here if necessary
+                // client.subscribe("your/topic");
+            } else {
+                Serial.print("Failed, rc=");
+                Serial.print(client.state());
+                Serial.println(", try again after delay");
+
+                // Update delay for next try
+                reconnectDelay = (unsigned long)(reconnectDelay * MULTIPLIER);
+                if (reconnectDelay > MAX_RECONNECT_DELAY) {
+                    reconnectDelay = MAX_RECONNECT_DELAY;
+                }
+                lastReconnectAttempt = now;
+            }
+        }
+    }
+}
+
+void reconnectWiFi() {
+    if (WiFi.status() != WL_CONNECTED) {
+        unsigned long now = millis();
+        if (now - lastWiFiReconnectAttempt > wifiReconnectDelay) {
+            Serial.println("Attempting WiFi reconnection...");
+
+            WiFi.begin(ssid, password);  // Initiates the connection attempt in the background
+            
+            // If WiFi.status() becomes WL_CONNECTED before the next check, 
+            // you know the connection is successful.
+            if (WiFi.status() == WL_CONNECTED) {
+                Serial.println("Connected to WiFi");
+                wifiReconnectDelay = INITIAL_RECONNECT_DELAY; // Reset delay
+            } else {
+                Serial.println("WiFi reconnection failed, trying again later.");
+
+                // Update delay for the next try
+                wifiReconnectDelay = (unsigned long)(wifiReconnectDelay * MULTIPLIER);
+                if (wifiReconnectDelay > MAX_RECONNECT_DELAY) {
+                    wifiReconnectDelay = MAX_RECONNECT_DELAY;
+                }
+                lastWiFiReconnectAttempt = now;
+            }
+        }
+    }
+}
+
+bool cb(Modbus::ResultCode event, uint16_t transactionId, void* data) { // Callback to monitor errors
+  if (event != Modbus::EX_SUCCESS) {
+    Serial.print("Request result: 0x");
+    Serial.print(event, HEX);
+  }
+  return true;
+}
+
+void readModbusRegister(uint8_t slaveId, uint16_t firstReg, uint16_t* res, uint16_t regCount, Modbus::ResultCallback cb) {
+    if (!mb.slave()) {    // Check if no transaction in progress
+        mb.readHreg(slaveId, firstReg, res, regCount, cb); // Send Read Hreg from Modbus Server
+        while(mb.slave()) { // Check if transaction is active
+            mb.task();
+            delay(10);
+        }
+
+        Serial.print("Voltage: "); 
+        float num;
+        memcpy(&num, res, 4);
+        Serial.print(num);
+        Serial.println(" V");
+    }
+    delay(5000);
+}
+

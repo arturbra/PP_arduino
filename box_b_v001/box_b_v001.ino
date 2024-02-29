@@ -64,7 +64,7 @@ boolean time_error = false;
 
 //Pluviometer setup
 const int hallSensorPin = 16;
-unsigned long rain = 0; // Counter for magnet passes
+unsigned long rain = -1; // Counter for magnet passes
 bool lastSensorState = HIGH; // Used to store the previous sensor state
 int sumSensorValues = 0; // Variable to hold the sum of sensor values
 int numReadings = 0; // Variable to count the number of readings
@@ -98,6 +98,22 @@ File myFile;
 String header;
 String data_str;
 
+// LED and Button
+#define LED1 26
+#define LED2 25
+#define BUTTON_PIN 27
+
+bool buttonState = false;
+bool lastButtonState = false;
+
+unsigned long lastLEDChange = 0;
+unsigned long blinkInterval = 500; // for alternating blink during Wi-Fi connect
+
+bool led1State = LOW;
+bool led2State = LOW;
+bool ledState = false;
+bool wifiConnected = false;
+
 void setup() {
   Serial.begin(115200);
 
@@ -112,26 +128,49 @@ void setup() {
   temperatureMillis = millis();
   blinkMillis = millis();
 
+  //LED and Button
+  pinMode(LED1, OUTPUT);
+  pinMode(LED2, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
   //WiFi configuration
   Wire.begin();
   WiFi.begin(ssid, password);
   Serial.println("Connecting to the Wi-Fi");
   digitalWrite(OnBoardLED, HIGH);
-  while(wifiTries != 120) {
-    if (WiFi.status() != WL_CONNECTED){
-          delay(500);
-          Serial.print(".");
-          wifiTries++;
-    } else{
-        Serial.println("");
-        Serial.print("Connected to WiFi network with IP Address: ");
-        Serial.println(WiFi.localIP());
-        break;
-    }
+
+  while (!wifiConnected && wifiTries < 60) {
+      if (WiFi.status() != WL_CONNECTED) {
+          if (millis() - lastLEDChange >= blinkInterval) {
+              // Alternate the LEDs
+              if (ledState) {
+                  digitalWrite(LED1, LOW);
+                  digitalWrite(LED2, HIGH);
+              } else {
+                  digitalWrite(LED1, HIGH);
+                  digitalWrite(LED2, LOW);
+              }
+              ledState = !ledState;
+              lastLEDChange = millis();
+              wifiTries++;
+          }
+      } else {
+          wifiConnected = true;
+      }
   }
 
-  if (WiFi.status() != WL_CONNECTED){
-    Serial.println("Wi-Fi not connected succesfully");
+  if (wifiConnected) {
+    // Blink both LEDs twice to indicate successful connection
+    for (int i = 0; i < 2; i++) {
+        digitalWrite(LED1, HIGH);
+        digitalWrite(LED2, HIGH);
+        delay(200);
+        digitalWrite(LED1, LOW);
+        digitalWrite(LED2, LOW);
+        delay(200);
+    }
+  } else {
+      Serial.println("Failed to connect to WiFi after 120 tries");
   }
   
   //SD card configuration
@@ -140,13 +179,23 @@ void setup() {
   Serial.println("Initializing SD card");
     if (!SD.begin(CS)) {
       Serial.println("SD card initialization failed!");
-    while (1);
+    while (1){
+      digitalWrite(LED1, HIGH);  // turn LED1 ON
+      digitalWrite(LED2, HIGH);  // turn LED2 ON
+      delay(500);                // wait for 500ms
+      digitalWrite(LED1, LOW);   // turn LED1 OFF
+      digitalWrite(LED2, LOW);   // turn LED2 OFF
+      delay(500);                // wait for 500ms
+    }
   }
+  
   Serial.println("SD card initialization done");
 
-  createTemperatureFile(6);
-  createTemperatureFile(5);
+  createTemperatureFile(1);
+  createTemperatureFile(2);
   createRainfallFile();
+  createTestFile();
+
 
   //RTC configuration
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
@@ -205,7 +254,24 @@ void loop() {
     }
   }
   precipitation();
+
+    // Check button press
+  bool currentButtonState = digitalRead(BUTTON_PIN);
   
+  if (currentButtonState == HIGH && lastButtonState == LOW) {
+      // button has been pressed
+      delay(50);  // debounce delay
+      if(digitalRead(BUTTON_PIN) == HIGH) {  // check the button state again after the debounce delay
+          Serial.println("Button Pressed!");  // Debug message for button press
+          
+          // Save value to SD card and blink if succeed
+          RTCTimeNow();
+          temperatureTest(1, Fahrenheit);
+          temperatureTest(2, Fahrenheit2);
+      }
+  }
+  
+  lastButtonState = currentButtonState;
 }
 
 void printLocalTime(){
@@ -374,11 +440,10 @@ void createTemperatureFile(int sensorNumber){
   }
 }
 
-
 void createRainfallFile(){
   myFile = SD.open("/box_b_rainfall.txt");
   if (!myFile) {
-    myFile = SD.open("/rainfall.txt", FILE_WRITE);
+    myFile = SD.open("/box_b_rainfall.txt", FILE_WRITE);
     Serial.println("Rainfall file doesn't exist. Creating file");
     header = String("Date") + "," + String("Rainfall"), + "\r\n";
     myFile.println(header.c_str());
@@ -390,18 +455,61 @@ void createRainfallFile(){
 }
 
 void saveTemperatureValue(int sensorNumber, float temperature){
-  String filename = "/box_b_temperature_" + String(sensorNumber) + ".txt";
-  myFile = SD.open(filename.c_str(), FILE_APPEND);
+    String filename = "/box_b_temperature_" + String(sensorNumber) + ".txt";
+    myFile = SD.open(filename.c_str(), FILE_APPEND);
+    if (myFile) {
+        data_str = String(DateAndTimeString) + "," + String(temperature) + "\r\n";
+        myFile.println(data_str.c_str());
+        myFile.close();
+        Serial.println("Appended to the temperature_" + String(sensorNumber) + ".txt file");
+        if (sensorNumber == 1) {
+            digitalWrite(LED1, HIGH);
+            delay(100); // short blink
+            digitalWrite(LED1, LOW);
+        } else if (sensorNumber == 2) {
+            digitalWrite(LED2, HIGH);
+            delay(100); // short blink
+            digitalWrite(LED2, LOW);
+        }
+    } else {
+        Serial.println("Error opening temperature_" + String(sensorNumber) + ".txt file");
+    }
+}
+
+void createTestFile(){
+  String filename = "/test.txt";
+  myFile = SD.open(filename.c_str(), FILE_WRITE);
+
+  // if the file opened okay, write to it:
   if (myFile) {
-    data_str = String(DateAndTimeString) + "," + String(temperature) + "\r\n";
-    myFile.println(data_str.c_str());
-    myFile.close();
-    Serial.println("Appended to the temperature_" + String(sensorNumber) + ".txt file");
+    Serial.println("Test File Created");
   } else {
-    Serial.println("Error opening temperature_" + String(sensorNumber) + ".txt file");
+    Serial.println("Error opening the button_presses.txt file");
   }
 }
 
+void temperatureTest(int sensorNumber, float temperature){
+  String filename = "/test.txt";
+  myFile = SD.open(filename.c_str(), FILE_APPEND);
+  if (myFile) {
+      data_str = String(DateAndTimeString) + "," + String(temperature) + "\r\n";
+      myFile.println(data_str.c_str());
+      myFile.close();
+      Serial.println("Appended to the temperature_" + String(sensorNumber) + ".txt file");
+      if (sensorNumber == 1) {
+          digitalWrite(LED1, HIGH);
+          delay(100); // short blink
+          digitalWrite(LED1, LOW);
+      } else if (sensorNumber == 2) {
+          digitalWrite(LED2, HIGH);
+          delay(100); // short blink
+          digitalWrite(LED2, LOW);
+      }
+  } else {
+      Serial.println("Error opening temperature_" + String(sensorNumber) + ".txt file");
+  }
+}
+ 
 void saveRainfallValue(){
   myFile = SD.open("/box_b_rainfall.txt", FILE_APPEND);
   if (myFile) {
